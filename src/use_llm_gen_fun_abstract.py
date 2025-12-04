@@ -55,8 +55,8 @@ def match_assembly_to_source(model_name, code: str, prompt_path: str) -> str:
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="LLM gen abstract")
     argparser.add_argument('--prompt_path', type=str, default=r"tmp/fun_abstract_tmp.md", help='Path to the prompt template file')
-    argparser.add_argument('--data_path', type=str, default=r"resources\dataset\dataset_no_opti.csv", help='Path to the dataset CSV file')
-    argparser.add_argument('--output_path', type=str, default=r"resources\dataset\func_pairs_with_abstract.csv")
+    argparser.add_argument('--data_path', type=str, default=r"resources/dataset/dataset_no_opti.csv", help='Path to the dataset CSV file')
+    argparser.add_argument('--output_path', type=str, default=r"resources/dataset/func_pairs_with_abstract.csv")
     argparser.add_argument('--log_path', type=str, default=f"resources/logs/llm_gen_abstract{int(time.time())}.log", help='Path to the log file')
     args = argparser.parse_args()
     print("data_path: ", args.data_path)
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     all_data = []
     step = 100
     len_df = len(df)
-    for i in range(len_df):
+    for i in range(1, len_df+1):
         item = df.iloc[i]
         src_func = item['src_func']
         result = match_assembly_to_source(model_name, src_func, args.prompt_path)
