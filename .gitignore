@@ -1,3 +1,4 @@
 resources
 logs
 **/__pycache__/
+.vscode
