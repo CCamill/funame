@@ -2,7 +2,7 @@ import os
 import sys
 from typing import Dict 
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, "/home/lab314/cjw/funame")
 
 import argparse
 import pandas as pd
@@ -28,7 +28,7 @@ log_dir = 'logs'
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
-logger = setup_logger('Finetune', f"{log_dir}/finetuning-{datetime.now().strftime("%Y%m%d_%H%M%S")}.log")
+logger = setup_logger('Finetune')
 
 @dataclass
 class TrainConfig:

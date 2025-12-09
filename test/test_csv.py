@@ -1,6 +1,6 @@
 import pandas as pd
 
-csv_path = r"resources/dataset/absrtract_large_src_funcs.csv"
+csv_path = r"resources/sym-dataset/func_pairs.csv"
 
 df = pd.read_csv(csv_path)
 print(df.columns)
