@@ -1,6 +1,6 @@
 import sys
 sys.path.insert(0, "/home/lab314/cjw/funame")
-from config import PROJECT_ROOT, LOG_DIR
+from settings import PROJECT_ROOT, LOG_DIR
 from utils.utils import setup_logger
 logger = setup_logger("build_func_pairs_from_asm_and_src_csv")
 import pandas as pd
@@ -8,7 +8,7 @@ import os
 from tqdm import tqdm
 
 if __name__ == "__main__":
-    asm_csv_path = "resources/sym-dataset/asm_funcs.csv"
+    asm_csv_path = "resources/sym-dataset/asm_funcs_with_strings.csv"
     src_csv_path = "resources/sym-dataset/src_funcs.csv"
     output_csv_path = "resources/sym-dataset/func_pairs.csv"
     merge_step = 1000
@@ -28,7 +28,7 @@ if __name__ == "__main__":
         asm_item = asm_df[asm_df['signature'] == src_signature]
         if len(asm_item) == 0:
             continue
-        asm_funcs = asm_item['asm_func'].values
+ w        asm_funcs = asm_item['asm_func'].values
         opti_level = asm_item['opti_level'].values
         arch = asm_item['arch'].values
         for i in range(len(asm_funcs)):

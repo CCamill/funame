@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 from typing import List
 sys.path.insert(0, "/home/lab314/cjw/funame")
-from config import LOG_DIR
+from settings import LOG_DIR
 
 def setup_logger(name: str) -> logging.Logger:
     log_path = os.path.join(LOG_DIR, f"{name}--{datetime.now().strftime("%Y%m%d_%H%M%S")}.log")

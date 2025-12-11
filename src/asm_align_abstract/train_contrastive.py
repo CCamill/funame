@@ -137,11 +137,13 @@ class AsmAbstractContrastive(nn.Module):
     
     def get_embeddings(self, asm_inputs, abstract_inputs):
         """获取两个模型的embedding"""
+        asm_attention_mask = asm_inputs['attention_mask']
+        abstract_attention_mask = abstract_inputs['attention_mask']
         # ASM模型前向传播
         asm_embeddings = self.asm_model(**asm_inputs)  # [batch, 768],  clap-asm 默认使用mean pooling 
         
         # Abstract模型前向传播
-        abstract_outputs = self.abstract_model(**abstract_inputs)   # sentence-bert一般使用mean pooling的方式
+        abstract_outputs = self.abstract_model(**abstract_inputs)   # sentence-bert一般使用mean pooling的方式, 内部已经处理了padding
         if hasattr(abstract_outputs, 'pooler_output') and abstract_outputs.pooler_output is not None:
             abstract_embeddings = abstract_outputs.pooler_output
         else:
@@ -162,7 +164,6 @@ class AsmAbstractContrastive(nn.Module):
         """训练模型"""
         logger.info("开始训练...")
         logger.info(f"==========================================================")
-        best_eval_loss = float('inf')
         
         logger.info(f"从第 {self.start_epoch+1} 轮开始训练， 共 {self.config.epochs} 轮")
         for epoch in range(self.start_epoch, self.start_epoch +  self.config.epochs):
@@ -209,23 +210,18 @@ class AsmAbstractContrastive(nn.Module):
             
             # 计算平均训练损失
             avg_train_loss = train_loss / len(self.train_dataloader)
-            avg_train_metrics = {k: v / len(self.train_dataloader) for k, v in train_metrics.items()}
-            
             logger.info(f"平均训练损失: {avg_train_loss:.4f}")
-            logger.info(f"训练指标: {avg_train_metrics}")
             
             # 评估阶段
             eval_loss, eval_metrics = self.evaluate()
             logger.info(f"验证损失: {eval_loss:.4f}")
             logger.info(f"验证指标: {eval_metrics}\n")
             
-            
             # 保存最佳模型（基于验证损失）
             if eval_metrics['mrr'] > self.best_eval_mrr:
                 self.best_eval_mrr = eval_metrics['mrr']
-                self.save_model(f'{self.config.model_save_dir}/best_model_epoch_{epoch+1}.pt')
-                logger.info(f"保存最佳MRR模型 (验证MRR: {eval_metrics['mrr']:.4f})\n")
-            
+                self.save_model(f'{self.config.model_save_dir}/best_model.pt', epoch)
+                logger.info(f"保存最佳MRR模型 (验证MRR: {eval_metrics['mrr']:.4f})\n")            
                 
     def _compute_retrieval_metrics(
         self,
@@ -313,7 +309,7 @@ class AsmAbstractContrastive(nn.Module):
         
         return avg_loss, metrics
     
-    def save_model(self, path):
+    def save_model(self, path, epoch):
         """保存模型"""
         torch.save({
             'asm_model_state_dict': self.asm_model.state_dict(),
@@ -323,7 +319,8 @@ class AsmAbstractContrastive(nn.Module):
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             "config": self.config,
-            'mrr': self.best_eval_mrr
+            'mrr': self.best_eval_mrr,
+            'epoch': epoch
         }, path)
     
     def load_model(self, path, device=None):
@@ -332,10 +329,10 @@ class AsmAbstractContrastive(nn.Module):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        self.start_epoch = int(os.path.basename(path).split('_')[-1].split('.')[0])  # 从文件名中提取epoch信息
         # 加载检查点
         checkpoint = torch.load(path, map_location=device, weights_only=False)
         
+        self.start_epoch = checkpoint.get('epoch', 0)
         self.best_eval_mrr = checkpoint.get('mrr', 0)
         # 加载模型参数
         self.asm_model.load_state_dict(checkpoint['asm_model_state_dict'])

@@ -1,0 +1,22 @@
+# Core dependencies
+torch>=2.0.0
+transformers>=4.36.0
+peft>=0.7.0
+bitsandbytes>=0.41.0
+accelerate>=0.25.0
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+datasets>=2.14.0
+
+# Training utilities
+tqdm>=4.66.0
+tensorboard>=2.14.0
+
+# Optional: for better tokenization of assembly
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+
+# Logging and config
+pyyaml>=6.0

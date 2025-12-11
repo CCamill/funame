@@ -32,6 +32,9 @@ def process_single_file(arch, proj_name, opti, input_file):
         file_name = input_file.split('/')[-1] + '.csv'
         output_csv_path = os.path.join(r"resources/sym-dataset/ida_funcs/", arch, opti, proj_name, file_name)
         
+        if os.path.exists(output_csv_path):
+            return (input_file, True, f"已存在, 跳过: {output_csv_path}")
+
         os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
         
         # 创建处理脚本 - 关键修复：等待分析和使用正确的API
@@ -165,8 +168,11 @@ def find_all_exe_files(exe_directory):
         for opti in os.listdir(os.path.join(exe_directory, arch)):
             for proj in os.listdir(os.path.join(exe_directory, arch, opti)):
                 for file in os.listdir(os.path.join(exe_directory, arch, opti, proj)):
+                    if file.endswith('.i64'):
+                        continue
+                    exe_path = os.path.join(exe_directory, arch, opti, proj, file)
                     arg = (arch, proj, opti, file)
-                    exe_files.append(arg)
+                    exe_files.append(exe_path)
     return exe_files
 
 def mutiprocess_batch_process_with_structure(exe_directory, max_workers=8):

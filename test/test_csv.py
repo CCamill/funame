@@ -1,6 +1,6 @@
 import pandas as pd
 
-csv_path = r"resources/sym-dataset/func_pairs.csv"
+csv_path = r"resources/sym-dataset/asm_funcs_with_strings.csv"
 
 df = pd.read_csv(csv_path)
 print(df.columns)
