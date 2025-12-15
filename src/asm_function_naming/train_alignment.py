@@ -21,6 +21,7 @@ from utils import (
     AverageMeter, EarlyStopping, count_parameters,
     print_gpu_memory, create_optimizer
 )
+from loguru import logger
 
 
 def train_one_epoch(
@@ -142,8 +143,10 @@ def main(args):
     train_config = get_training_config()
     
     # 覆盖默认配置
-    if args.data_path:
-        train_config.data_path = args.data_path
+    if args.train_data_path:
+        train_config.train_data_path = args.train_data_path
+    if args.eval_data_path:
+        train_config.eval_data_path = args.eval_data_path
     if args.output_dir:
         train_config.output_dir = args.output_dir
     if args.epochs:
@@ -184,7 +187,8 @@ def main(args):
     # 创建数据加载器
     logger.info("Creating dataloaders...")
     train_loader, val_loader = create_dataloaders(
-        data_path=train_config.data_path,
+        train_data_path=train_config.train_data_path,
+        eval_data_path=train_config.eval_data_path,
         clap_tokenizer=model.clap_encoder.tokenizer,
         qwen_tokenizer=model.qwen_tokenizer,
         batch_size=train_config.alignment_batch_size,
@@ -275,11 +279,18 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stage 1: Contrastive Learning Alignment")
-    parser.add_argument("--data_path", type=str, help="Path to CSV data file")
-    parser.add_argument("--output_dir", type=str, help="Output directory")
-    parser.add_argument("--epochs", type=int, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, help="Batch size")
-    parser.add_argument("--lr", type=float, help="Learning rate")
+    parser.add_argument("--train_data_path", type=str, default="resources/sym-dataset/func_pairs_with_strings_train.csv", help="Path to CSV train data file")
+    parser.add_argument("--eval_data_path", type=str, default="resources/sym-dataset/func_pairs_with_strings_eval.csv", help="Path to CSV eval data file")
+    parser.add_argument("--output_dir", type=str, default="resources/asm-function-naming/alignment", help="Output directory")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
     
     args = parser.parse_args()
+    print(f"train_data_path: {args.train_data_path}")
+    print(f"eval_data_path: {args.eval_data_path}")
+    print(f"output_dir: {args.output_dir}")
+    print(f"epochs: {args.epochs}")
+    print(f"batch_size: {args.batch_size}")
+    print(f"lr: {args.lr}")
     main(args)

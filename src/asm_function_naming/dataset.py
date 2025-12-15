@@ -228,7 +228,8 @@ class HardNegativeDataset(Dataset):
 
 
 def create_dataloaders(
-    data_path: str,
+    train_data_path: str,
+    eval_data_path: str,
     clap_tokenizer: PreTrainedTokenizer,
     qwen_tokenizer: PreTrainedTokenizer,
     batch_size: int = 8,
@@ -253,24 +254,6 @@ def create_dataloaders(
     Returns:
         train_loader, val_loader
     """
-    # 读取数据
-    df = pd.read_csv(data_path)
-    n_train = int(len(df) * train_split)
-    
-    # 划分数据
-    train_df = df.iloc[:n_train]
-    val_df = df.iloc[n_train:]
-    
-    # 保存临时文件
-    import tempfile
-    import os
-    
-    temp_dir = tempfile.mkdtemp()
-    train_path = os.path.join(temp_dir, "train.csv")
-    val_path = os.path.join(temp_dir, "val.csv")
-    
-    train_df.to_csv(train_path, index=False)
-    val_df.to_csv(val_path, index=False)
     
     # 创建数据集
     if dataset_type == "generation":
@@ -281,14 +264,14 @@ def create_dataloaders(
         raise ValueError(f"Unknown dataset type: {dataset_type}")
         
     train_dataset = DatasetClass(
-        data_path=train_path,
+        data_path=train_data_path,
         clap_tokenizer=clap_tokenizer,
         qwen_tokenizer=qwen_tokenizer,
         **dataset_kwargs
     )
     
     val_dataset = DatasetClass(
-        data_path=val_path,
+        data_path=eval_data_path,
         clap_tokenizer=clap_tokenizer,
         qwen_tokenizer=qwen_tokenizer,
         **dataset_kwargs

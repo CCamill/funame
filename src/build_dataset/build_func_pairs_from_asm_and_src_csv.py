@@ -10,7 +10,7 @@ from tqdm import tqdm
 if __name__ == "__main__":
     asm_csv_path = "resources/sym-dataset/asm_funcs_with_strings.csv"
     src_csv_path = "resources/sym-dataset/src_funcs.csv"
-    output_csv_path = "resources/sym-dataset/func_pairs.csv"
+    output_csv_path = "resources/sym-dataset/func_pairs_with_strings.csv"
     merge_step = 1000
     logger.info(f"汇编函数CSV文件路径: {asm_csv_path}")
     logger.info(f"源函数CSV文件路径: {src_csv_path}")
@@ -28,7 +28,7 @@ if __name__ == "__main__":
         asm_item = asm_df[asm_df['signature'] == src_signature]
         if len(asm_item) == 0:
             continue
- w        asm_funcs = asm_item['asm_func'].values
+        asm_funcs = asm_item['asm_func'].values
         opti_level = asm_item['opti_level'].values
         arch = asm_item['arch'].values
         for i in range(len(asm_funcs)):

@@ -44,8 +44,8 @@ class ModelConfig:
 class TrainingConfig:
     """训练配置"""
     # 数据配置
-    data_path: str = "data/sample_data.csv"
-    train_split: float = 0.9
+    train_data_path: str = "data/sample_data.csv"
+    eval_data_path: str = "data/sample_data.csv"
     max_asm_length: int = 2048  # 汇编代码最大长度
     max_src_length: int = 1024  # 源代码最大长度
     max_name_length: int = 64   # 函数名最大长度
