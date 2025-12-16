@@ -9,7 +9,9 @@ import json
 from typing import Dict, Any, Optional
 from datetime import datetime
 import logging
-
+import sys
+sys.path.insert(0, "/home/lab314/cjw/funame")
+from settings import LOG_DIR
 
 def set_seed(seed: int = 42):
     """设置随机种子"""
@@ -21,22 +23,20 @@ def set_seed(seed: int = 42):
     torch.backends.cudnn.benchmark = False
     
 
-def setup_logging(output_dir: str, log_name: str = "training"):
-    """设置日志"""
-    os.makedirs(output_dir, exist_ok=True)
-    
-    log_file = os.path.join(output_dir, f"{log_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
-    )
-    
-    return logging.getLogger(__name__)
+def setup_logger(name: str) -> logging.Logger:
+    log_path = os.path.join(LOG_DIR, f"{name}--{datetime.now().strftime("%Y%m%d_%H%M%S")}.log")
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.DEBUG)
+    fh = logging.FileHandler(log_path)
+    fh.setLevel(logging.DEBUG)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    ch.setFormatter(formatter)
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
 
 
 def save_config(config: Any, output_dir: str, filename: str = "config.json"):
@@ -139,11 +139,11 @@ def get_gpu_memory_info() -> Dict[str, float]:
     return {}
 
 
-def print_gpu_memory():
+def print_gpu_memory(logger: logging.Logger):
     """打印GPU内存使用情况"""
     info = get_gpu_memory_info()
     if info:
-        print(f"GPU Memory - Allocated: {info['allocated_gb']:.2f}GB, "
+        logger.info(f"GPU Memory - Allocated: {info['allocated_gb']:.2f}GB, "
               f"Reserved: {info['reserved_gb']:.2f}GB, "
               f"Max: {info['max_allocated_gb']:.2f}GB")
 

@@ -137,8 +137,6 @@ class AsmAbstractContrastive(nn.Module):
     
     def get_embeddings(self, asm_inputs, abstract_inputs):
         """获取两个模型的embedding"""
-        asm_attention_mask = asm_inputs['attention_mask']
-        abstract_attention_mask = abstract_inputs['attention_mask']
         # ASM模型前向传播
         asm_embeddings = self.asm_model(**asm_inputs)  # [batch, 768],  clap-asm 默认使用mean pooling 
         

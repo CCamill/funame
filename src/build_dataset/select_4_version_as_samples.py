@@ -32,7 +32,7 @@ def sample_functions_from_csv(input_file, output_file, n_samples=4, random_state
     
     for idx, (func_name, group) in tqdm(
                                     enumerate(df.groupby(function_id_col)), 
-                                    total=len(df), 
+                                    total=len(df.groupby(function_id_col)), 
                                     desc="Sampling functions", 
                                     ncols=100
                                 ):

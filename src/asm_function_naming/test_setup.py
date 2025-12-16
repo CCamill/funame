@@ -55,7 +55,7 @@ def test_config():
     model_config = get_model_config()
     train_config = get_training_config()
     
-    print(f"  Model: {model_config.qwen_model_name}")
+    print(f"  Model: {model_config.src_model_name}")
     print(f"  CLAP: {model_config.clap_asm_model_name}")
     print(f"  Prefix tokens: {model_config.num_prefix_tokens}")
     print(f"  4bit quantization: {model_config.use_4bit}")

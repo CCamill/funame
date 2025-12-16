@@ -1,6 +1,6 @@
 import pandas as pd
 
-csv_path = r"resources/sym-dataset/func_pairs_with_strings_samples.csv"
+csv_path = r"resources/sym-dataset/func_pairs_with_strings_train.csv"
 
 df = pd.read_csv(csv_path)
 print(df.columns)

@@ -69,26 +69,7 @@ class CLAPAsmEncoder(nn.Module):
             **kwargs
         )
         
-        # 获取last_hidden_state
-        hidden_states = outputs.last_hidden_state  # [batch, seq_len, hidden]
-        
-        # 池化策略
-        if self.pooling_strategy == "cls":
-            pooled = hidden_states[:, 0, :]
-        elif self.pooling_strategy == "mean":
-            # 考虑attention mask的平均池化
-            mask_expanded = attention_mask.unsqueeze(-1).expand(hidden_states.size()).float()
-            sum_embeddings = torch.sum(hidden_states * mask_expanded, dim=1)
-            sum_mask = torch.clamp(mask_expanded.sum(dim=1), min=1e-9)
-            pooled = sum_embeddings / sum_mask
-        elif self.pooling_strategy == "max":
-            mask_expanded = attention_mask.unsqueeze(-1).expand(hidden_states.size())
-            hidden_states[~mask_expanded.bool()] = float('-inf')
-            pooled = torch.max(hidden_states, dim=1)[0]
-        else:
-            raise ValueError(f"Unknown pooling strategy: {self.pooling_strategy}")
-            
-        return pooled
+        return outputs
     
     def encode(
         self,

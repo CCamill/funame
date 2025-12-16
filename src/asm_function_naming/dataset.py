@@ -3,6 +3,7 @@
 
 处理(源码函数, 汇编函数, 函数名)三元组
 """
+import logging
 import torch
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
@@ -121,23 +122,23 @@ class  AsmAlignmentDataset(Dataset):
         self,
         data_path: str,
         clap_tokenizer: PreTrainedTokenizer,
-        qwen_tokenizer: PreTrainedTokenizer,
-        max_asm_length: int = 2048,
-        max_src_length: int = 1024
+        src_tokenizer: PreTrainedTokenizer,
+        max_asm_length: int = 768,
+        max_src_length: int = 1536
     ):
         self.clap_tokenizer = clap_tokenizer
-        self.qwen_tokenizer = qwen_tokenizer
+        self.src_tokenizer = src_tokenizer
+
+        self.asm_prompt_template = "Analyze the following assembly code and understand its semantic meaning:\n"\
+            "```asm\n{code}\n```\n"\
+            "The keyword for the semantics of this function is:"
+
         self.max_asm_length = max_asm_length
         self.max_src_length = max_src_length
         
         self.df = pd.read_csv(data_path)
-        
-        required_columns = ["src_func", "asm_func"]
-        for col in required_columns:
-            if col not in self.df.columns:
-                raise ValueError(f"CSV文件缺少必要的列: {col}")
-                
-        print(f"Loaded {len(self.df)} samples for alignment from {data_path}")
+        # self.df = self.df[:100]
+
         
     def __len__(self) -> int:
         return len(self.df)
@@ -145,21 +146,51 @@ class  AsmAlignmentDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         row = self.df.iloc[idx]
         
-        asm_code = str(row["asm_code"])
-        src_code = str(row["src_code"])
+        asm_func = str(row["asm_func"])
+        src_func = str(row["src_func"])
         
         # 编码ASM
+        # CLAP tokenizer 不支持 truncation 参数，需要先编码再手动截断和填充
         asm_encoding = self.clap_tokenizer(
-            asm_code,
-            max_length=self.max_asm_length,
+            [{'function': asm_func}],
+            return_tensors="pt",
             padding="max_length",
-            truncation=True,
-            return_tensors="pt"
+            max_length=self.max_asm_length
         )
         
+        # 手动截断和填充
+        asm_input_ids = asm_encoding["input_ids"].squeeze(0)  # [seq_len]
+        asm_attention_mask = asm_encoding["attention_mask"].squeeze(0)  # [seq_len]
+        
+        # 截断到最大长度
+        if asm_input_ids.size(0) > self.max_asm_length:
+            asm_input_ids = asm_input_ids[:self.max_asm_length]
+            asm_attention_mask = asm_attention_mask[:self.max_asm_length]
+        
+        # 填充到最大长度
+        pad_length = self.max_asm_length - asm_input_ids.size(0)
+        if pad_length > 0:
+            pad_token_id = self.clap_tokenizer.pad_token_id
+            if pad_token_id is None:
+                pad_token_id = self.clap_tokenizer.eos_token_id if self.clap_tokenizer.eos_token_id is not None else 0
+            
+            asm_input_ids = torch.cat([
+                asm_input_ids, 
+                torch.full((pad_length,), pad_token_id, dtype=asm_input_ids.dtype)
+            ])
+            asm_attention_mask = torch.cat([
+                asm_attention_mask, 
+                torch.zeros(pad_length, dtype=asm_attention_mask.dtype)
+            ])
+        
+        # 确保长度为 max_asm_length
+        assert asm_input_ids.size(0) == self.max_asm_length, f"ASM input_ids length mismatch: {asm_input_ids.size(0)} != {self.max_asm_length}"
+        assert asm_attention_mask.size(0) == self.max_asm_length, f"ASM attention_mask length mismatch: {asm_attention_mask.size(0)} != {self.max_asm_length}"
+        
         # 编码源代码
-        src_encoding = self.qwen_tokenizer(
-            src_code,
+        # max_src_length 已经在 __init__ 中确保不超过模型最大长度
+        src_encoding = self.src_tokenizer(
+            self.asm_prompt_template.format(code=src_func),
             max_length=self.max_src_length,
             padding="max_length",
             truncation=True,
@@ -167,8 +198,8 @@ class  AsmAlignmentDataset(Dataset):
         )
         
         return {
-            "asm_input_ids": asm_encoding["input_ids"].squeeze(0),
-            "asm_attention_mask": asm_encoding["attention_mask"].squeeze(0),
+            "asm_input_ids": asm_input_ids,
+            "asm_attention_mask": asm_attention_mask,
             "src_input_ids": src_encoding["input_ids"].squeeze(0),
             "src_attention_mask": src_encoding["attention_mask"].squeeze(0)
         }
@@ -193,7 +224,7 @@ class HardNegativeDataset(Dataset):
         self.base_dataset = AsmAlignmentDataset(
             data_path=data_path,
             clap_tokenizer=clap_tokenizer,
-            qwen_tokenizer=qwen_tokenizer,
+            src_tokenizer=qwen_tokenizer,
             max_asm_length=max_asm_length,
             max_src_length=max_src_length
         )
@@ -231,11 +262,14 @@ def create_dataloaders(
     train_data_path: str,
     eval_data_path: str,
     clap_tokenizer: PreTrainedTokenizer,
-    qwen_tokenizer: PreTrainedTokenizer,
-    batch_size: int = 8,
-    train_split: float = 0.9,
+    src_tokenizer: PreTrainedTokenizer,
+    train_batch_size: int = 8,
+    eval_batch_size: int = 8,
     dataset_type: str = "generation",  # "generation" or "alignment"
     num_workers: int = 4,
+    logger: logging.Logger = None,
+    max_asm_length: int = 768,
+    max_src_length: int = 1536,
     **dataset_kwargs
 ) -> Tuple[DataLoader, DataLoader]:
     """
@@ -245,7 +279,8 @@ def create_dataloaders(
         data_path: 数据路径
         clap_tokenizer: CLAP tokenizer
         qwen_tokenizer: Qwen tokenizer
-        batch_size: batch大小
+        train_batch_size: train batch大小
+        eval_batch_size: eval batch大小
         train_split: 训练集比例
         dataset_type: 数据集类型
         num_workers: 工作进程数
@@ -266,30 +301,33 @@ def create_dataloaders(
     train_dataset = DatasetClass(
         data_path=train_data_path,
         clap_tokenizer=clap_tokenizer,
-        qwen_tokenizer=qwen_tokenizer,
+        src_tokenizer=src_tokenizer,
+        max_asm_length=max_asm_length,
+        max_src_length=max_src_length,
         **dataset_kwargs
     )
-    
+    logger.info(f"training dataset: {len(train_dataset)} samples")
     val_dataset = DatasetClass(
         data_path=eval_data_path,
         clap_tokenizer=clap_tokenizer,
-        qwen_tokenizer=qwen_tokenizer,
+        src_tokenizer=src_tokenizer,
+        max_asm_length=max_asm_length,
+        max_src_length=max_src_length,
         **dataset_kwargs
     )
-    
+    logger.info(f"evaluation dataset: {len(val_dataset)} samples")
     # 创建DataLoader
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
+        batch_size=train_batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
-        drop_last=True
+        pin_memory=True
     )
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=eval_batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True
@@ -297,23 +335,3 @@ def create_dataloaders(
     
     return train_loader, val_loader
 
-
-def collate_fn_with_padding(batch: List[Dict]) -> Dict[str, torch.Tensor]:
-    """
-    自定义collate函数，处理变长序列
-    """
-    # 获取所有键
-    keys = batch[0].keys()
-    
-    result = {}
-    for key in keys:
-        if key == "func_name":
-            # 字符串类型，直接收集
-            result[key] = [item[key] for item in batch]
-        elif batch[0][key] is not None:
-            # Tensor类型，堆叠
-            result[key] = torch.stack([item[key] for item in batch])
-        else:
-            result[key] = None
-            
-    return result

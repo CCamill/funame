@@ -18,9 +18,61 @@ from peft import (
 )
 from typing import Optional, Dict, Any, Tuple, List
 import warnings
+import torch.nn.functional as F
 
 from .clap_asm import CLAPAsmEncoder
 from .projection import AsmProjection, create_projection
+
+class InfoNCELoss(nn.Module):
+    """
+    带困难样本挖掘的InfoNCE损失函数
+    
+    困难负样本是那些与查询样本相似但实际上是负样本的例子，
+    它们对模型学习更有帮助。
+    """
+    def __init__(self, temperature:int =0.05, hard_negtive_weight:int = 1, margin:int = 0.2):
+        super().__init__()
+        self.temperature = temperature
+        self.hard_negtive_weight = hard_negtive_weight
+        self.margin = margin
+    def forward(self, asm_embeddings:torch.Tensor, abstract_embedding: torch.Tensor):
+        batch_size = asm_embeddings.shape[0]
+        asm_embeddings = F.normalize(asm_embeddings, p=2, dim=1)
+        abstract_embedding = F.normalize(abstract_embedding, p=2, dim = 1)
+        
+        sim_matrix = torch.matmul(asm_embeddings, abstract_embedding.T) / self.temperature
+        
+        pos_mask = torch.eye(batch_size, device=sim_matrix.device).bool()
+        
+        pos_sim = sim_matrix[pos_mask]
+        neg_sim = sim_matrix[~pos_mask].view(batch_size, -1)
+        
+        hard_neg_sim, _ = neg_sim.max(dim=1)
+        
+        labels = torch.arange(batch_size, device=asm_embeddings.device)
+        
+        loss_asm2abs = F.cross_entropy(sim_matrix, labels)
+        loss_abs2asm = F.cross_entropy(sim_matrix.T, labels)
+        
+        loss_basic = (loss_asm2abs + loss_abs2asm) / 2
+        
+        hard_neg_penalty = F.relu(hard_neg_sim - pos_sim + self.margin / self.temperature).mean()
+        
+        total_loss = loss_basic + self.hard_negtive_weight * hard_neg_penalty
+        
+        with torch.no_grad():
+            accuracy = (sim_matrix.argmax(dim=1) == labels).float().mean().item()
+            mean_pos_sim = pos_sim.mean().item() * self.temperature
+            mean_neg_sim = neg_sim.mean().item() * self.temperature
+        
+        metrics = {
+            'accuracy': accuracy,
+            'mean_pos_sim': mean_pos_sim,
+            'mean_neg_sim': mean_neg_sim,
+            'hard_neg_penalty': hard_neg_penalty.item()
+        }
+        
+        return total_loss, metrics
 
 
 class AsmNamingModel(nn.Module):
@@ -413,11 +465,11 @@ class AsmNamingModelForAlignment(nn.Module):
     
     def __init__(
         self,
-        clap_model_name: str = "microsoft/codebert-base",
-        qwen_model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct",
+        clap_model_name: str = "hustcw/clap-asm",
+        src_model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct",
         clap_hidden_size: int = 768,
-        qwen_hidden_size: int = 2048,
-        projection_dim: int = 512,
+        src_hidden_size: int = 2048,
+        projection_dim: int = 768,
         use_4bit: bool = True,
         device: str = "cuda"
     ):
@@ -430,14 +482,14 @@ class AsmNamingModelForAlignment(nn.Module):
         self.clap_encoder = CLAPAsmEncoder(
             model_name_or_path=clap_model_name,
             hidden_size=clap_hidden_size
-        )
+        ).to(device)
         
         self.clap_projection = nn.Sequential(
             nn.Linear(clap_hidden_size, clap_hidden_size),
             nn.GELU(),
             nn.Linear(clap_hidden_size, projection_dim),
             nn.LayerNorm(projection_dim)
-        )
+        ).to(device)
         
         # Qwen (冻结，只用于提取特征)
         if use_4bit:
@@ -450,36 +502,35 @@ class AsmNamingModelForAlignment(nn.Module):
         else:
             quantization_config = None
             
-        self.qwen = AutoModelForCausalLM.from_pretrained(
-            qwen_model_name,
+        self.source_model = AutoModelForCausalLM.from_pretrained(
+            src_model_name,
             quantization_config=quantization_config,
             device_map="auto",
             trust_remote_code=True,
-            torch_dtype=torch.float16,
+            dtype=torch.float16,
             output_hidden_states=True
         )
         
         # 冻结Qwen
-        for param in self.qwen.parameters():
+        for param in self.source_model.parameters():
             param.requires_grad = False
             
-        self.qwen_tokenizer = AutoTokenizer.from_pretrained(
-            qwen_model_name,
+        self.source_tokenizer = AutoTokenizer.from_pretrained(
+            src_model_name,
             trust_remote_code=True
         )
-        if self.qwen_tokenizer.pad_token is None:
-            self.qwen_tokenizer.pad_token = self.qwen_tokenizer.eos_token
+        if self.source_tokenizer.pad_token is None:
+            self.source_tokenizer.pad_token = self.source_tokenizer.eos_token
             
-        # Qwen特征投影头
-        self.qwen_projection = nn.Sequential(
-            nn.Linear(qwen_hidden_size, qwen_hidden_size // 2),
+        # Source model特征投影头
+        self.source_projection = nn.Sequential(
+            nn.Linear(src_hidden_size, src_hidden_size // 2),
             nn.GELU(),
-            nn.Linear(qwen_hidden_size // 2, projection_dim),
+            nn.Linear(src_hidden_size // 2, projection_dim),
             nn.LayerNorm(projection_dim)
-        )
+        ).to(device)
         
-        # 可学习的温度参数
-        self.logit_scale = nn.Parameter(torch.ones([]) * 2.6592)  # log(1/0.07)
+        self.loss_fn = InfoNCELoss()
         
     def encode_asm(
         self,
@@ -489,7 +540,6 @@ class AsmNamingModelForAlignment(nn.Module):
         """编码ASM代码"""
         embedding = self.clap_encoder(input_ids, attention_mask)
         projected = self.clap_projection(embedding)
-        projected = nn.functional.normalize(projected, p=2, dim=-1)
         return projected
     
     @torch.no_grad()
@@ -497,10 +547,10 @@ class AsmNamingModelForAlignment(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        layer_idx: int = 16  # 使用第16层的输出
+        layer_idx: int = -1  # 使用第16层的输出
     ) -> torch.Tensor:
         """编码源代码（从Qwen的中间层提取特征）"""
-        outputs = self.qwen(
+        outputs = self.source_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             output_hidden_states=True
@@ -515,9 +565,11 @@ class AsmNamingModelForAlignment(nn.Module):
         sum_mask = torch.clamp(mask_expanded.sum(dim=1), min=1e-9)
         pooled = sum_embeddings / sum_mask
         
+        # 确保 pooled 在正确的设备上（qwen_projection 所在的设备）
+        pooled = pooled.to(next(self.source_projection.parameters()).device)
+        
         # 投影
-        projected = self.qwen_projection(pooled.float())
-        projected = nn.functional.normalize(projected, p=2, dim=-1)
+        projected = self.source_projection(pooled.float())
         
         return projected
     
@@ -532,38 +584,11 @@ class AsmNamingModelForAlignment(nn.Module):
         前向传播 - 计算对比学习损失
         """
         # 编码
-        asm_embeds = self.encode_asm(asm_input_ids, asm_attention_mask)
         src_embeds = self.encode_src(src_input_ids, src_attention_mask)
+        asm_embeds = self.encode_asm(asm_input_ids, asm_attention_mask)
         
-        # 计算相似度
-        logit_scale = self.logit_scale.exp()
-        logits_per_asm = logit_scale * asm_embeds @ src_embeds.t()
-        logits_per_src = logits_per_asm.t()
+        # 计算损失
+        loss, metrics = self.loss_fn(asm_embeds, src_embeds)
         
-        # InfoNCE损失
-        batch_size = asm_embeds.size(0)
-        labels = torch.arange(batch_size, device=asm_embeds.device)
         
-        loss_asm = nn.functional.cross_entropy(logits_per_asm, labels)
-        loss_src = nn.functional.cross_entropy(logits_per_src, labels)
-        loss = (loss_asm + loss_src) / 2
-        
-        # 计算正负样本的余弦相似度用于监控
-        with torch.no_grad():
-            # 正样本相似度（对角线）
-            pos_sim = (asm_embeds * src_embeds).sum(dim=-1)
-            
-            # 负样本相似度（非对角线）
-            sim_matrix = asm_embeds @ src_embeds.t()
-            mask = ~torch.eye(batch_size, dtype=torch.bool, device=sim_matrix.device)
-            neg_sim = sim_matrix[mask]
-            
-        return {
-            "loss": loss,
-            "logits_per_asm": logits_per_asm,
-            "logits_per_src": logits_per_src,
-            "pos_similarity": pos_sim.mean(),
-            "neg_similarity": neg_sim.mean(),
-            "asm_embeds": asm_embeds,
-            "src_embeds": src_embeds
-        }
+        return loss, metrics

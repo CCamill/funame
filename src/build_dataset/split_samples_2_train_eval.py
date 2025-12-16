@@ -1,5 +1,6 @@
 """
 This script is used to split the samples into train and eval sets.
+train length: 30000, eval length: 10000
 """
 import os
 import random
@@ -15,6 +16,8 @@ if __name__ == "__main__":
     print("len: ", len(df))
     train_df = df.sample(frac=split_ratio, random_state=42)
     eval_df = df.drop(train_df.index)
+    train_df = train_df.sample(n=30000, random_state=42)
+    eval_df = eval_df.sample(n=10000, random_state=42)
     print("train len: ", len(train_df))
     print("eval len: ", len(eval_df))
     train_df.to_csv(output_train_csv_path, index=False)
