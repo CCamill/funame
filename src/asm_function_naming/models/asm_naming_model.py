@@ -84,15 +84,15 @@ class AsmNamingModel(nn.Module):
     ASM Code -> CLAP-ASM -> Projection -> Prefix Tokens
                                               |
                                               v
-    Prompt -> Qwen Tokenizer -> [Prefix | Prompt Tokens] -> Qwen -> Function Name
+    Prompt -> llama Tokenizer -> [Prefix | Prompt Tokens] -> llama -> Function Name
     """
     
     def __init__(
         self,
         clap_model_name: str = "hustcw/clap-asm",
-        qwen_model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct",
+        llm_model_name: str = "meta-llama/Llama-3.2-3B-Instruct",
         clap_hidden_size: int = 768,
-        qwen_hidden_size: int = 2048,
+        llm_hidden_size: int = 2048,
         num_prefix_tokens: int = 32,
         projection_type: str = "mlp",
         use_4bit: bool = True,
@@ -108,36 +108,33 @@ class AsmNamingModel(nn.Module):
         
         self.device = device
         self.num_prefix_tokens = num_prefix_tokens
-        self.qwen_hidden_size = qwen_hidden_size
+        self.qwen_hidden_size = llm_hidden_size
         
         # 1. 加载CLAP-ASM编码器
-        print("Loading CLAP-ASM encoder...")
         self.clap_encoder = CLAPAsmEncoder(
             model_name_or_path=clap_model_name,
             hidden_size=clap_hidden_size,
             pooling_strategy="cls",
             freeze=freeze_clap
-        )
+        ).to(device)
         
         # 2. 创建投影层
-        print("Creating projection layer...")
         self.projection = create_projection(
             projection_type=projection_type,
             clap_hidden_size=clap_hidden_size,
-            llm_hidden_size=qwen_hidden_size,
+            llm_hidden_size=llm_hidden_size,
             num_prefix_tokens=num_prefix_tokens
-        )
+        ).to(device)
         
         # 3. 加载Qwen模型（4bit量化）
-        print("Loading Qwen model...")
-        self.qwen_tokenizer = AutoTokenizer.from_pretrained(
-            qwen_model_name,
+        self.source_tokenizer = AutoTokenizer.from_pretrained(
+            llm_model_name,
             trust_remote_code=True
         )
         
         # 确保有pad token
-        if self.qwen_tokenizer.pad_token is None:
-            self.qwen_tokenizer.pad_token = self.qwen_tokenizer.eos_token
+        if self.source_tokenizer.pad_token is None:
+            self.source_tokenizer.pad_token = self.source_tokenizer.eos_token
             
         # 量化配置
         if use_4bit:
@@ -150,19 +147,34 @@ class AsmNamingModel(nn.Module):
         else:
             quantization_config = None
             
-        self.qwen = AutoModelForCausalLM.from_pretrained(
-            qwen_model_name,
+        self.source_model = AutoModelForCausalLM.from_pretrained(
+            llm_model_name,
             quantization_config=quantization_config,
             device_map="auto",
             trust_remote_code=True,
-            torch_dtype=torch.float16
-        )
+            dtype=torch.float16
+        ).to(device)
+        
+        # 获取模型的实际 hidden_size
+        actual_hidden_size = self.source_model.config.hidden_size
+        if actual_hidden_size != llm_hidden_size:
+            print(f"Warning: Model actual hidden_size ({actual_hidden_size}) != specified llm_hidden_size ({llm_hidden_size})")
+            print(f"Using actual hidden_size: {actual_hidden_size}")
+            # 重新创建投影层以匹配实际的 hidden_size
+            self.projection = create_projection(
+                projection_type=projection_type,
+                clap_hidden_size=clap_hidden_size,
+                llm_hidden_size=actual_hidden_size,
+                num_prefix_tokens=num_prefix_tokens
+            ).to(device)
+            llm_hidden_size = actual_hidden_size
+            self.qwen_hidden_size = actual_hidden_size
         
         # 4. 添加LoRA
         if use_lora:
             print("Adding LoRA adapters...")
             if use_4bit:
-                self.qwen = prepare_model_for_kbit_training(self.qwen)
+                self.source_model = prepare_model_for_kbit_training(self.source_model)
                 
             if lora_target_modules is None:
                 lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
@@ -176,12 +188,12 @@ class AsmNamingModel(nn.Module):
                 task_type=TaskType.CAUSAL_LM
             )
             
-            self.qwen = get_peft_model(self.qwen, lora_config)
-            self.qwen.print_trainable_parameters()
-            
+            self.source_model = get_peft_model(self.source_model, lora_config)
+            self.source_model.print_trainable_parameters()
+        
         # 5. 创建用于prefix的虚拟embedding层（用于获取位置编码等）
         self.prefix_tokens_placeholder = nn.Parameter(
-            torch.zeros(1, num_prefix_tokens, qwen_hidden_size),
+            torch.zeros(1, num_prefix_tokens, llm_hidden_size),
             requires_grad=False
         )
         
@@ -239,7 +251,7 @@ class AsmNamingModel(nn.Module):
         # [batch, num_prefix, hidden]
         
         # 2. 获取prompt的embeddings
-        prompt_embeds = self.qwen.get_input_embeddings()(prompt_input_ids)
+        prompt_embeds = self.source_model.get_input_embeddings()(prompt_input_ids)
         # [batch, prompt_len, hidden]
         
         # 3. 拼接prefix和prompt embeddings
@@ -267,8 +279,8 @@ class AsmNamingModel(nn.Module):
         else:
             full_labels = None
             
-        # 6. 通过Qwen
-        outputs = self.qwen(
+        # 6. 通过llm
+        outputs = self.source_model(
             inputs_embeds=inputs_embeds,
             attention_mask=full_attention_mask,
             labels=full_labels,
@@ -326,13 +338,13 @@ class AsmNamingModel(nn.Module):
         )
         
         # 3. 编码prompt
-        prompt_inputs = self.qwen_tokenizer(
+        prompt_inputs = self.source_tokenizer(
             prompt,
             return_tensors="pt"
         )
         prompt_inputs = {k: v.to(self.device) for k, v in prompt_inputs.items()}
         
-        prompt_embeds = self.qwen.get_input_embeddings()(prompt_inputs["input_ids"])
+        prompt_embeds = self.source_model.get_input_embeddings()(prompt_inputs["input_ids"])
         
         # 4. 拼接
         inputs_embeds = torch.cat([prefix_embeds, prompt_embeds], dim=1)
@@ -350,7 +362,7 @@ class AsmNamingModel(nn.Module):
         )
         
         # 6. 生成
-        outputs = self.qwen.generate(
+        outputs = self.source_model.generate(
             inputs_embeds=inputs_embeds,
             attention_mask=full_attention_mask,
             max_new_tokens=max_new_tokens,
@@ -358,8 +370,8 @@ class AsmNamingModel(nn.Module):
             top_p=top_p,
             do_sample=do_sample,
             num_beams=num_beams,
-            pad_token_id=self.qwen_tokenizer.pad_token_id,
-            eos_token_id=self.qwen_tokenizer.eos_token_id
+            pad_token_id=self.source_tokenizer.pad_token_id,
+            eos_token_id=self.source_tokenizer.eos_token_id
         )
         
         # 7. 解码（只取新生成的部分）
@@ -368,7 +380,7 @@ class AsmNamingModel(nn.Module):
         prompt_len = prompt_inputs["input_ids"].size(1)
         generated_ids = outputs[0][prompt_len:]
         
-        function_name = self.qwen_tokenizer.decode(
+        function_name = self.source_tokenizer.decode(
             generated_ids,
             skip_special_tokens=True
         ).strip()
@@ -409,14 +421,14 @@ class AsmNamingModel(nn.Module):
         )
         
         # 3. Qwen LoRA
-        self.qwen.save_pretrained(os.path.join(save_path, "qwen_lora"))
+        self.source_model.save_pretrained(os.path.join(save_path, "source_lora"))
         
         # 4. Tokenizers
         self.clap_encoder.tokenizer.save_pretrained(
             os.path.join(save_path, "clap_tokenizer")
         )
-        self.qwen_tokenizer.save_pretrained(
-            os.path.join(save_path, "qwen_tokenizer")
+        self.source_tokenizer.save_pretrained(
+            os.path.join(save_path, "source_tokenizer")
         )
         
         print(f"Model saved to {save_path}")
@@ -449,9 +461,9 @@ class AsmNamingModel(nn.Module):
         )
         
         # 3. Qwen LoRA
-        model.qwen = PeftModel.from_pretrained(
-            model.qwen,
-            os.path.join(load_path, "qwen_lora")
+        model.source_model = PeftModel.from_pretrained(
+            model.source_model,
+            os.path.join(load_path, "source_lora")
         )
         
         return model
@@ -467,7 +479,7 @@ class AsmNamingModelForAlignment(nn.Module):
     def __init__(
         self,
         clap_model_name: str = "hustcw/clap-asm",
-        src_model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct",
+        src_model_name: str = "meta-llama/Llama-3.2-3B-Instruct",
         clap_hidden_size: int = 768,
         src_hidden_size: int = 2048,
         projection_dim: int = 768,

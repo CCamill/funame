@@ -3,6 +3,7 @@
 
 训练完整的ASM函数命名模型
 """
+from datetime import datetime
 import os
 import sys
 import argparse
@@ -15,12 +16,12 @@ from transformers import get_linear_schedule_with_warmup
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from config import get_model_config, get_training_config
+from config import ModelConfig, TrainingConfig
 from models import AsmNamingModel
 from dataset import AsmFunctionDataset, create_dataloaders
-from utils import ( 
-    set_seed, setup_logging, save_config,
-    AverageMeter, EarlyStopping, count_parameters,
+from asm_function_naming_utils import ( 
+    set_seed, setup_logger, save_config,
+    AverageMeter, count_parameters,
     print_gpu_memory, compute_metrics
 )
 
@@ -42,7 +43,7 @@ def train_one_epoch(
     
     optimizer.zero_grad()
     
-    pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
+    pbar = tqdm(train_loader, total=len(train_loader), desc=f"Epoch {epoch}")
     
     for step, batch in enumerate(pbar):
         # 移动数据到设备
@@ -107,7 +108,7 @@ def evaluate(
     predictions = []
     references = []
     
-    for batch_idx, batch in enumerate(tqdm(val_loader, desc="Evaluating")):
+    for batch_idx, batch in enumerate(tqdm(val_loader, total=len(val_loader), desc="Evaluating")):
         asm_input_ids = batch["asm_input_ids"].to(device)
         asm_attention_mask = batch["asm_attention_mask"].to(device)
         prompt_input_ids = batch["prompt_input_ids"].to(device)
@@ -162,50 +163,24 @@ def evaluate(
     return loss_meter.avg, metrics
 
 
-def main(args):
-    # 配置
-    model_config = get_model_config()
-    train_config = get_training_config()
+def main(model_config: ModelConfig, train_config: TrainingConfig):
     
-    # 覆盖默认配置
-    if args.train_data_path:
-        train_config.train_data_path = args.train_data_path
-    if args.eval_data_path:
-        train_config.eval_data_path = args.eval_data_path
-    if args.output_dir:
-        train_config.output_dir = args.output_dir
-    if args.epochs:
-        train_config.generation_epochs = args.epochs
-    if args.batch_size:
-        train_config.generation_train_batch_size = args.train_batch_size
-    if args.eval_batch_size:
-        train_config.generation_eval_batch_size = args.eval_batch_size
-    if args.lr:
-        train_config.generation_lr = args.lr
-    if args.alignment_checkpoint:
-        # 加载对齐阶段的权重
-        pass  # 在模型创建后处理
-        
     # 设置
     set_seed(train_config.seed)
     device = train_config.device
-    output_dir = os.path.join(train_config.output_dir, "generation")
+    output_dir = train_config.output_dir
     os.makedirs(output_dir, exist_ok=True)
     
-    logger = setup_logging(output_dir, "generation_training")
+    logger = setup_logger("generation_training")
     save_config(train_config, output_dir, "training_config.json")
     save_config(model_config, output_dir, "model_config.json")
     
-    logger.info(f"Training config: {train_config}")
-    logger.info(f"Model config: {model_config}")
-    
     # 创建模型
-    logger.info("Creating model...")
     model = AsmNamingModel(
         clap_model_name=model_config.clap_asm_model_name,
-        qwen_model_name=model_config.src_model_name,
+        llm_model_name=model_config.src_model_name,
         clap_hidden_size=model_config.clap_asm_hidden_size,
-        qwen_hidden_size=model_config.src_hidden_size,
+        llm_hidden_size=model_config.src_hidden_size,
         num_prefix_tokens=model_config.num_prefix_tokens,
         projection_type="mlp",
         use_4bit=model_config.use_4bit,
@@ -238,13 +213,14 @@ def main(args):
         train_data_path=train_config.train_data_path,
         eval_data_path=train_config.eval_data_path,
         clap_tokenizer=model.clap_encoder.tokenizer,
-        src_tokenizer=model.qwen_tokenizer,
+        src_tokenizer=model.source_tokenizer,
         train_batch_size=train_config.generation_train_batch_size,
         eval_batch_size=train_config.generation_eval_batch_size,
         dataset_type="generation",
         max_asm_length=train_config.max_asm_length,
         max_name_length=train_config.max_name_length,
-        num_workers=4
+        num_workers=4,
+        logger=logger
     )
     
     logger.info(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
@@ -266,9 +242,9 @@ def main(args):
             "name": "projection"
         },
         {
-            "params": [p for n, p in model.qwen.named_parameters() if p.requires_grad],
+            "params": [p for n, p in model.source_model.named_parameters() if p.requires_grad],
             "lr": train_config.generation_lr,
-            "name": "qwen_lora"
+            "name": "source_model"
         }
     ]
     
@@ -287,17 +263,12 @@ def main(args):
         num_training_steps=num_training_steps
     )
     
-    # 早停
-    early_stopping = EarlyStopping(patience=5, mode="min")
-    
     # 训练循环
-    best_loss = float("inf")
     best_exact_match = 0
     
     for epoch in range(1, train_config.generation_epochs + 1):
-        logger.info(f"\n{'='*50}")
+        logger.info(f"{'-'*50}")
         logger.info(f"Epoch {epoch}/{train_config.generation_epochs}")
-        logger.info(f"{'='*50}")
         
         # 训练
         train_loss = train_one_epoch(
@@ -309,12 +280,6 @@ def main(args):
         val_loss, val_metrics = evaluate(model, val_loader, device, logger)
         logger.info(f"Validation loss: {val_loss:.4f}")
         logger.info(f"Validation metrics: {val_metrics}")
-        # 保存最佳模型（基于loss）
-        if val_loss < best_loss:
-            best_loss = val_loss
-            save_path = os.path.join(output_dir, "best_model")
-            model.save_pretrained(save_path)
-            logger.info(f"Saved best model (loss) to {save_path}")
             
         # 也保存最佳exact match模型
         if val_metrics["exact_match"] > best_exact_match:
@@ -328,33 +293,63 @@ def main(args):
             save_path = os.path.join(output_dir, f"checkpoint_epoch_{epoch}")
             model.save_pretrained(save_path)
             
-        # 早停检查
-        if early_stopping(val_loss):
-            logger.info(f"Early stopping triggered at epoch {epoch}")
-            break
-            
-        print_gpu_memory()
         
     logger.info(f"\nTraining completed!")
-    logger.info(f"Best loss: {best_loss:.4f}")
     logger.info(f"Best exact match: {best_exact_match:.4f}")
     logger.info(f"Model saved to {output_dir}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stage 2: Generation Training")
+    parser.add_argument("--clap_model_name", type=str, default="hustcw/clap-asm", help="CLAP model name")
+    parser.add_argument("--src_model_name", type=str, default="meta-llama/Llama-3.2-3B-Instruct", help="Source model name", choices=["Qwen/Qwen2.5-Coder-3B-Instruct", "meta-llama/Llama-3.2-3B-Instruct"])
+    parser.add_argument("--clap_hidden_size", type=int, default=768, help="CLAP hidden size")
+    parser.add_argument("--src_hidden_size", type=int, default=2048, help="Source hidden size", choices=[2048, 4096])
+    parser.add_argument("--projection_dim", type=int, default=768, help="Projection dimension")
+    parser.add_argument("--use_4bit", type=bool, default=True, help="Use 4bit quantization")
+    parser.add_argument("--device", type=str, default="cuda", help="Device")
+    parser.add_argument("--num_workers", type=int, default=1, help="Number of workers")
     parser.add_argument("--train_data_path", type=str, default="resources/sym-dataset/func_pairs_with_strings_train.csv", help="Path to CSV train data file")
     parser.add_argument("--eval_data_path", type=str, default="resources/sym-dataset/func_pairs_with_strings_eval.csv", help="Path to CSV eval data file")
-    parser.add_argument("--output_dir", type=str, help="Output directory")
+    parser.add_argument("--output_dir", type=str, default=f"resources/asm-function-naming/generation-{datetime.now().strftime('%Y%m%d_%H%M%S')}", help="Output directory")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
     parser.add_argument("--train_batch_size", type=int, default=4, help="Train batch size")
     parser.add_argument("--eval_batch_size", type=int, default=4, help="Eval batch size")
+    parser.add_argument("--max_asm_length", type=int, default=1024, help="Max assembly code length")
+    parser.add_argument("--max_src_length", type=int, default=512, help="Max source code length")
+    parser.add_argument("--load_checkpoint", type=str, default=None, help="Load checkpoint example: resources/asm-function-naming/generation-20251216_120407/Epoch_10")
     parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate")
-    parser.add_argument(
-        "--alignment_checkpoint", 
-        type=str, 
-        help="Path to alignment stage checkpoint (optional)"
+    parser.add_argument("--warmup_ratio", type=float, default=0.1, help="Warmup ratio")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
+    parser.add_argument("--seed", type=int, default=42, help="Seed")
+    parser.add_argument("--alignment_checkpoint", type=str, default="resources/asm-function-naming/alignment-20251216_120407/alignment/Epoch_10", help="Path to alignment stage checkpoint (optional), example: resources/asm-function-naming/alignment-20251216_120407/Epoch_10")
+    args = parser.parse_args()
+    if args.load_checkpoint:
+        args.output_dir = os.path.dirname(args.load_checkpoint)
+
+    model_config = ModelConfig(
+        clap_asm_model_name=args.clap_model_name,
+        src_model_name=args.src_model_name,
+        clap_asm_hidden_size=args.clap_hidden_size,
+        src_hidden_size=args.src_hidden_size,
+        use_4bit=args.use_4bit,
+        projection_dim=args.projection_dim
+    )
+    train_config = TrainingConfig(
+        train_data_path=args.train_data_path,
+        eval_data_path=args.eval_data_path,
+        max_asm_length=args.max_asm_length,
+        max_src_length=args.max_src_length,
+        generation_epochs=args.epochs,
+        generation_train_batch_size=args.train_batch_size,
+        generation_eval_batch_size=args.eval_batch_size,
+        generation_lr=args.lr,
+        generation_warmup_ratio=args.warmup_ratio,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        seed=args.seed,
+        device=args.device,
+        output_dir=args.output_dir,
+        num_workers=args.num_workers
     )
     
-    args = parser.parse_args()
-    main(args)
+    main(model_config, train_config)

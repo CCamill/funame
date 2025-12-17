@@ -23,7 +23,7 @@ class AsmFunctionDataset(Dataset):
         self,
         data_path: str,
         clap_tokenizer: PreTrainedTokenizer,
-        qwen_tokenizer: PreTrainedTokenizer,
+        src_tokenizer: PreTrainedTokenizer,
         max_asm_length: int = 2048,
         max_prompt_length: int = 256,
         max_name_length: int = 64,
@@ -33,14 +33,14 @@ class AsmFunctionDataset(Dataset):
         Args:
             data_path: CSV文件路径
             clap_tokenizer: CLAP-ASM的tokenizer
-            qwen_tokenizer: Qwen的tokenizer
+            src_tokenizer: Source的tokenizer
             max_asm_length: ASM代码最大长度
             max_prompt_length: 提示最大长度
             max_name_length: 函数名最大长度
             prompt_template: 提示模板
         """
         self.clap_tokenizer = clap_tokenizer
-        self.qwen_tokenizer = qwen_tokenizer
+        self.src_tokenizer = src_tokenizer
         self.max_asm_length = max_asm_length
         self.max_prompt_length = max_prompt_length
         self.max_name_length = max_name_length
@@ -49,14 +49,6 @@ class AsmFunctionDataset(Dataset):
         # 加载数据
         self.df = pd.read_csv(data_path)
         
-        # 确保必要的列存在
-        required_columns = ["src_func", "asm_func", "func_name"]
-        for col in required_columns:
-            if col not in self.df.columns:
-                raise ValueError(f"CSV文件缺少必要的列: {col}")
-                
-        print(f"Loaded {len(self.df)} samples from {data_path}")
-        
     def __len__(self) -> int:
         return len(self.df)
     
@@ -64,22 +56,21 @@ class AsmFunctionDataset(Dataset):
         row = self.df.iloc[idx]
         
         asm_func = str(row["asm_func"])
-        func_name = str(row["func_name"])
+        func_name = str(row["function_name"])
         
         # 1. 编码ASM代码（用于CLAP）
         asm_encoding = self.clap_tokenizer(
-            asm_func,
-            max_length=self.max_asm_length,
+            [{'function': asm_func}],
+            return_tensors="pt",
             padding="max_length",
-            truncation=True,
-            return_tensors="pt"
+            max_length=self.max_asm_length
         )
         
         # 2. 构建prompt和target
         # 格式: "[PROMPT][FUNCTION_NAME]<eos>"
         full_text = f"{self.prompt_template} {func_name}"
         
-        encoding = self.qwen_tokenizer(
+        encoding = self.src_tokenizer(
             full_text,
             max_length=self.max_prompt_length + self.max_name_length,
             padding="max_length",
@@ -89,7 +80,7 @@ class AsmFunctionDataset(Dataset):
         
         # 3. 创建labels（只在函数名部分计算loss）
         # 首先找到函数名开始的位置
-        prompt_encoding = self.qwen_tokenizer(
+        prompt_encoding = self.src_tokenizer(
             self.prompt_template,
             return_tensors="pt"
         )
@@ -99,7 +90,7 @@ class AsmFunctionDataset(Dataset):
         # 将prompt部分的label设为-100
         labels[0, :prompt_length] = -100
         # 将padding部分的label设为-100
-        labels[labels == self.qwen_tokenizer.pad_token_id] = -100
+        labels[labels == self.src_tokenizer.pad_token_id] = -100
         
         return {
             "asm_input_ids": asm_encoding["input_ids"].squeeze(0),
@@ -216,7 +207,7 @@ class HardNegativeDataset(Dataset):
         self,
         data_path: str,
         clap_tokenizer: PreTrainedTokenizer,
-        qwen_tokenizer: PreTrainedTokenizer,
+        src_tokenizer: PreTrainedTokenizer,
         max_asm_length: int = 2048,
         max_src_length: int = 1024,
         num_negatives: int = 4
@@ -224,7 +215,7 @@ class HardNegativeDataset(Dataset):
         self.base_dataset = AsmAlignmentDataset(
             data_path=data_path,
             clap_tokenizer=clap_tokenizer,
-            src_tokenizer=qwen_tokenizer,
+            src_tokenizer=src_tokenizer,
             max_asm_length=max_asm_length,
             max_src_length=max_src_length
         )
@@ -278,7 +269,7 @@ def create_dataloaders(
     Args:
         data_path: 数据路径
         clap_tokenizer: CLAP tokenizer
-        qwen_tokenizer: Qwen tokenizer
+        src_tokenizer: Source tokenizer
         train_batch_size: train batch大小
         eval_batch_size: eval batch大小
         train_split: 训练集比例
@@ -303,7 +294,6 @@ def create_dataloaders(
         clap_tokenizer=clap_tokenizer,
         src_tokenizer=src_tokenizer,
         max_asm_length=max_asm_length,
-        max_src_length=max_src_length,
         **dataset_kwargs
     )
     logger.info(f"training dataset: {len(train_dataset)} samples")
@@ -312,7 +302,6 @@ def create_dataloaders(
         clap_tokenizer=clap_tokenizer,
         src_tokenizer=src_tokenizer,
         max_asm_length=max_asm_length,
-        max_src_length=max_src_length,
         **dataset_kwargs
     )
     logger.info(f"evaluation dataset: {len(val_dataset)} samples")

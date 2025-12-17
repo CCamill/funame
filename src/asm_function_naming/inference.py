@@ -30,9 +30,9 @@ def load_model(checkpoint_path: str, device: str = "cuda") -> AsmNamingModel:
     # 创建模型
     model = AsmNamingModel(
         clap_model_name=model_config.clap_asm_model_name,
-        qwen_model_name=model_config.src_model_name,
+        llm_model_name=model_config.src_model_name,
         clap_hidden_size=model_config.clap_asm_hidden_size,
-        qwen_hidden_size=model_config.src_hidden_size,
+        llm_hidden_size=model_config.src_hidden_size,
         num_prefix_tokens=model_config.num_prefix_tokens,
         projection_type="mlp",
         use_4bit=model_config.use_4bit,
@@ -61,8 +61,8 @@ def load_model(checkpoint_path: str, device: str = "cuda") -> AsmNamingModel:
     lora_path = os.path.join(checkpoint_path, "qwen_lora")
     if os.path.exists(lora_path):
         from peft import PeftModel
-        model.qwen = PeftModel.from_pretrained(
-            model.qwen,
+        model.source_model = PeftModel.from_pretrained(
+            model.source_model,
             lora_path
         )
         print("Loaded LoRA weights")
