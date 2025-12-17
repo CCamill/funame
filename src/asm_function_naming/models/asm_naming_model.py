@@ -3,6 +3,7 @@ ASM Function Naming Model
 
 核心模型：结合CLAP-ASM编码器、投影层和Qwen2.5-Coder
 """
+import os
 import torch
 import torch.nn as nn
 from transformers import (
@@ -439,12 +440,12 @@ class AsmNamingModel(nn.Module):
         # 加载各组件
         # 1. CLAP encoder
         model.clap_encoder.load_state_dict(
-            torch.load(os.path.join(load_path, "clap_encoder.pt"), map_location=device)
+            torch.load(os.path.join(load_path, "clap_encoder.pt"), map_location=device, weights_only=False)
         )
         
         # 2. Projection
         model.projection.load_state_dict(
-            torch.load(os.path.join(load_path, "projection.pt"), map_location=device)
+            torch.load(os.path.join(load_path, "projection.pt"), map_location=device, weights_only=False)
         )
         
         # 3. Qwen LoRA
@@ -471,7 +472,8 @@ class AsmNamingModelForAlignment(nn.Module):
         src_hidden_size: int = 2048,
         projection_dim: int = 768,
         use_4bit: bool = True,
-        device: str = "cuda"
+        device: str = "cuda",
+        load_checkpoint: str = None
     ):
         super().__init__()
         
@@ -483,6 +485,10 @@ class AsmNamingModelForAlignment(nn.Module):
             model_name_or_path=clap_model_name,
             hidden_size=clap_hidden_size
         ).to(device)
+        if load_checkpoint:
+            self.clap_encoder.load_state_dict(
+                torch.load(os.path.join(load_checkpoint, "clap_encoder.pt"), map_location=device, weights_only=False)
+            )
         
         self.clap_projection = nn.Sequential(
             nn.Linear(clap_hidden_size, clap_hidden_size),
@@ -529,6 +535,11 @@ class AsmNamingModelForAlignment(nn.Module):
             nn.Linear(src_hidden_size // 2, projection_dim),
             nn.LayerNorm(projection_dim)
         ).to(device)
+        
+        if load_checkpoint:
+            self.source_projection.load_state_dict(
+                torch.load(os.path.join(load_checkpoint, "source_projection.pt"), map_location=device, weights_only=False)
+            )
         
         self.loss_fn = InfoNCELoss()
         
@@ -578,7 +589,8 @@ class AsmNamingModelForAlignment(nn.Module):
         asm_input_ids: torch.Tensor,
         asm_attention_mask: torch.Tensor,
         src_input_ids: torch.Tensor,
-        src_attention_mask: torch.Tensor
+        src_attention_mask: torch.Tensor,
+        temperature: float = 0.05
     ) -> Dict[str, torch.Tensor]:
         """
         前向传播 - 计算对比学习损失
@@ -588,7 +600,7 @@ class AsmNamingModelForAlignment(nn.Module):
         asm_embeds = self.encode_asm(asm_input_ids, asm_attention_mask)
         
         # 计算损失
-        loss, metrics = self.loss_fn(asm_embeds, src_embeds)
+        loss, metrics = self.loss_fn(asm_embeds, src_embeds, temperature)
         
         
         return loss, metrics

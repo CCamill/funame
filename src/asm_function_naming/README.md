@@ -15,7 +15,7 @@
 │                              Layer          (可学习)            │
 │                                │                                │
 │                                ▼                                │
-│  Prompt: "Generate function name:" + Prefix ──► Qwen2.5-Coder  │
+│  Prompt: "Generate function name:" + Prefix ──► llama3.2  │
 │                                                      │          │
 │                                                      ▼          │
 │                                              Function Name      │
@@ -98,5 +98,5 @@ python inference.py --asm_code "your assembly code here"
 ## 注意事项
 
 1. CLAP-ASM模型需要从HuggingFace下载或使用本地路径
-2. 首次运行会下载Qwen2.5-coder:3b模型
+2. 首次运行会下载llama3.2:3b模型
 3. 4bit量化显著减少显存占用，适合RTX 4090

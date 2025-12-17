@@ -2,6 +2,7 @@
 配置文件 - ASM Function Naming Project
 """
 from dataclasses import dataclass, field
+import json
 from typing import Optional, List
 import torch
 
@@ -40,6 +41,12 @@ class ModelConfig:
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj"
     ])
+
+    @classmethod
+    def from_json(cls, json_path: str):
+        with open(json_path, "r") as f:
+            config = json.load(f)
+        return cls(**config)
 
 
 @dataclass
@@ -80,6 +87,12 @@ class TrainingConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     fp16: bool = True
     num_workers: int = 1
+
+    @classmethod
+    def from_json(cls, json_path: str):
+        with open(json_path, "r") as f:
+            config = json.load(f)
+        return cls(**config)
     
 
 @dataclass

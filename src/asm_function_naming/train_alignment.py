@@ -15,6 +15,7 @@ from transformers import get_linear_schedule_with_warmup
 from datetime import datetime
 import numpy as np
 import torch.nn.functional as F
+import json
 
 sys.path.insert(0, "/home/lab314/cjw/funame")
 from config import get_model_config, get_training_config, ModelConfig, TrainingConfig
@@ -59,11 +60,13 @@ def train_one_epoch(
         src_attention_mask = batch["src_attention_mask"].to(device)
         
         # 前向传播
+        temperature = max(0.05 - 0.0005*epoch, 0.008)
         loss, metrics = model(
             asm_input_ids=asm_input_ids,
             asm_attention_mask=asm_attention_mask,
             src_input_ids=src_input_ids,
-            src_attention_mask=src_attention_mask
+            src_attention_mask=src_attention_mask,
+            temperature=temperature
         )
         
         loss = loss / gradient_accumulation_steps
@@ -195,7 +198,7 @@ def save_checkpoint(model: AsmNamingModelForAlignment, name:str, output_dir: str
     )
     torch.save(
         model.source_projection.state_dict(),
-        os.path.join(save_path, "qwen_projection.pt")
+        os.path.join(save_path, "source_projection.pt")
     )
 
     # 保存训练状态和优化器和调度器 用于恢复训练
@@ -208,41 +211,13 @@ def save_checkpoint(model: AsmNamingModelForAlignment, name:str, output_dir: str
     torch.save(state, os.path.join(save_path, "training_state.pt"))
 
 
-def main(args):
-    # 配置
-    model_config = ModelConfig(
-        clap_asm_model_name=args.clap_model_name,
-        src_model_name=args.src_model_name,
-        clap_asm_hidden_size=args.clap_hidden_size,
-        src_hidden_size=args.src_hidden_size,
-        use_4bit=args.use_4bit,
-        projection_dim=args.projection_dim
-    )
-    train_config = TrainingConfig(
-        train_data_path=args.train_data_path,
-        eval_data_path=args.eval_data_path,
-        max_asm_length=args.max_asm_length,
-        max_src_length=args.max_src_length,
-        alignment_epochs=args.epochs,
-        alignment_train_batch_size=args.train_batch_size,
-        alignment_eval_batch_size=args.eval_batch_size,
-        alignment_lr=args.lr,
-        alignment_gradient_accumulation_steps=args.gradient_accumulation_steps,
-        seed=args.seed,
-        device=args.device,
-        output_dir=args.output_dir,
-        num_workers=args.num_workers
-    )
-    
+def main(model_config, train_config):
     # 设置
     set_seed(train_config.seed)
     device = train_config.device
-    output_dir = os.path.join(train_config.output_dir, "alignment")
+    output_dir = train_config.output_dir
     os.makedirs(output_dir, exist_ok=True)
-    
-    save_config(train_config, output_dir, "training_config.json")
-    save_config(model_config, output_dir, "model_config.json")
-    
+
     # 创建模型
     model = AsmNamingModelForAlignment(
         clap_model_name=model_config.clap_asm_model_name,
@@ -251,11 +226,11 @@ def main(args):
         src_hidden_size=model_config.src_hidden_size,
         projection_dim=model_config.projection_dim,
         use_4bit=model_config.use_4bit,
-        device=device
+        device=device,
+        load_checkpoint=args.load_checkpoint
     )
     
     logger.info(f"Trainable parameters: {count_parameters(model) / 1000000:.2f}M")
-    print_gpu_memory(logger)
     
     # 创建数据加载器
     train_loader, val_loader = create_dataloaders(
@@ -295,15 +270,25 @@ def main(args):
         num_training_steps=num_training_steps
     )
     
-    best_eval_mrr = -1
-    for epoch in range(1, train_config.alignment_epochs + 1):
-        logger.info(f"\n{'-'*30}")
+    if args.load_checkpoint:
+        training_state = torch.load(os.path.join(args.load_checkpoint, "training_state.pt"), weights_only=False)
+        optimizer.load_state_dict(training_state["optimizer_state_dict"])
+        scheduler.load_state_dict(training_state["scheduler_state_dict"])
+        best_eval_mrr = training_state["best_eval_mrr"]
+        start_epoch = training_state["epoch"] + 1
+        logger.info(f"Loaded checkpoint from {args.load_checkpoint}")
+        logger.info(f"Best MRR: {best_eval_mrr:.4f}, starting from epoch {start_epoch}")
+    else:
+        best_eval_mrr = -1.0
+        start_epoch = 1
+    for epoch in range(start_epoch, train_config.alignment_epochs + 1):
+        logger.info(f"{'-'*30}")
         logger.info(f"Epoch {epoch}/{train_config.alignment_epochs}")
         
         # 训练
         train_loss, train_metrics = train_one_epoch(
             model, train_loader, optimizer, scheduler, device, epoch, logger,
-            gradient_accumulation_steps=train_config.alignment_gradient_accumulation_steps
+            gradient_accumulation_steps=train_config.alignment_gradient_accumulation_steps,
         )
         logger.info(
             f"Epoch {epoch} completed. loss: {train_loss:.4f}, mean_pos_sim:{train_metrics['mean_pos_sim']:.4f}, mean_neg_sim:{train_metrics['mean_neg_sim']:.4f}"
@@ -355,29 +340,64 @@ if __name__ == "__main__":
     parser.add_argument("--train_batch_size", type=int, default=8, help="Train batch size")
     parser.add_argument("--eval_batch_size", type=int, default=8, help="Eval batch size")
     parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
+    parser.add_argument("--load_checkpoint", type=str, default=None, help="Load checkpoint example: resources/asm-function-naming/alignment-20251216_120407/Epoch_10")
     
     args = parser.parse_args()
     if args.src_model_name == "meta-llama/Llama-3.2-3B-Instruct":
         args.src_hidden_size = 3072
     else:
         args.src_hidden_size = 2048
-    logger.info(f"asm_model_name: {args.clap_model_name}")
-    logger.info(f"src_model_name: {args.src_model_name}")
-    logger.info(f"clap_hidden_size: {args.clap_hidden_size}")
-    logger.info(f"src_hidden_size: {args.src_hidden_size}")
-    logger.info(f"projection_dim: {args.projection_dim}")
-    logger.info(f"use_4bit: {args.use_4bit}")
-    logger.info(f"device: {args.device}")
-    logger.info(f"num_workers: {args.num_workers}")
-    logger.info(f"train_data_path: {args.train_data_path}")
-    logger.info(f"eval_data_path: {args.eval_data_path}")
-    logger.info(f"output_dir: {args.output_dir}")
-    logger.info(f"epochs: {args.epochs}")
-    logger.info(f"train_batch_size: {args.train_batch_size}")
-    logger.info(f"eval_batch_size: {args.eval_batch_size}")
-    logger.info(f"lr: {args.lr}")
+    if args.load_checkpoint:
+        args.output_dir = os.path.dirname(args.load_checkpoint)
 
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir, exist_ok=True)
+    # 配置
+    if args.load_checkpoint:
+        model_config = ModelConfig.from_json(os.path.join(os.path.dirname(args.load_checkpoint), "model_config.json"))
+        train_config = TrainingConfig.from_json(os.path.join(os.path.dirname(args.load_checkpoint), "training_config.json"))
+        logger.info(f"Training continued from checkpoint {args.load_checkpoint}")
+    else:
+        model_config = ModelConfig(
+            clap_asm_model_name=args.clap_model_name,
+            src_model_name=args.src_model_name,
+            clap_asm_hidden_size=args.clap_hidden_size,
+            src_hidden_size=args.src_hidden_size,
+            use_4bit=args.use_4bit,
+            projection_dim=args.projection_dim
+        )
+        train_config = TrainingConfig(
+            train_data_path=args.train_data_path,
+            eval_data_path=args.eval_data_path,
+            max_asm_length=args.max_asm_length,
+            max_src_length=args.max_src_length,
+            alignment_epochs=args.epochs,
+            alignment_train_batch_size=args.train_batch_size,
+            alignment_eval_batch_size=args.eval_batch_size,
+            alignment_lr=args.lr,
+            alignment_gradient_accumulation_steps=args.gradient_accumulation_steps,
+            seed=args.seed,
+            device=args.device,
+            output_dir=args.output_dir,
+            num_workers=args.num_workers
+        )
+        logger.info(f"Training started from scratch")
+    logger.info(f"asm_model_name: {model_config.clap_asm_model_name}")
+    logger.info(f"src_model_name: {model_config.src_model_name}")
+    logger.info(f"clap_hidden_size: {model_config.clap_asm_hidden_size}")
+    logger.info(f"src_hidden_size: {model_config.src_hidden_size}")
+    logger.info(f"projection_dim: {model_config.projection_dim}")
+    logger.info(f"use_4bit: {model_config.use_4bit}")
+    logger.info(f"device: {train_config.device}")
+    logger.info(f"num_workers: {train_config.num_workers}")
+    logger.info(f"train_data_path: {train_config.train_data_path}")
+    logger.info(f"eval_data_path: {train_config.eval_data_path}")
+    logger.info(f"output_dir: {train_config.output_dir}")
+    logger.info(f"epochs: {train_config.alignment_epochs}")
+    logger.info(f"train_batch_size: {train_config.alignment_train_batch_size}")
+    logger.info(f"eval_batch_size: {train_config.alignment_eval_batch_size}")
+    logger.info(f"lr: {train_config.alignment_lr}")
 
-    main(args)
+    if not args.load_checkpoint:
+        save_config(train_config, train_config.output_dir, "training_config.json")
+        save_config(model_config, train_config.output_dir, "model_config.json")
+
+    main(model_config, train_config)
