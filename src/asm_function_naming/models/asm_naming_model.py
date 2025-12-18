@@ -36,12 +36,15 @@ class InfoNCELoss(nn.Module):
         self.temperature = temperature
         self.hard_negtive_weight = hard_negtive_weight
         self.margin = margin
-    def forward(self, asm_embeddings:torch.Tensor, abstract_embedding: torch.Tensor):
+    def forward(self, asm_embeddings:torch.Tensor, abstract_embedding: torch.Tensor, temperature: Optional[float] = None):
         batch_size = asm_embeddings.shape[0]
         asm_embeddings = F.normalize(asm_embeddings, p=2, dim=1)
         abstract_embedding = F.normalize(abstract_embedding, p=2, dim = 1)
         
-        sim_matrix = torch.matmul(asm_embeddings, abstract_embedding.T) / self.temperature
+        # 如果提供了 temperature 参数，使用它；否则使用实例变量
+        temp = temperature if temperature is not None else self.temperature
+        
+        sim_matrix = torch.matmul(asm_embeddings, abstract_embedding.T) / temp
         
         pos_mask = torch.eye(batch_size, device=sim_matrix.device).bool()
         
@@ -57,14 +60,14 @@ class InfoNCELoss(nn.Module):
         
         loss_basic = (loss_asm2abs + loss_abs2asm) / 2
         
-        hard_neg_penalty = F.relu(hard_neg_sim - pos_sim + self.margin / self.temperature).mean()
+        hard_neg_penalty = F.relu(hard_neg_sim - pos_sim + self.margin / temp).mean()
         
         total_loss = loss_basic + self.hard_negtive_weight * hard_neg_penalty
         
         with torch.no_grad():
             accuracy = (sim_matrix.argmax(dim=1) == labels).float().mean().item()
-            mean_pos_sim = pos_sim.mean().item() * self.temperature
-            mean_neg_sim = neg_sim.mean().item() * self.temperature
+            mean_pos_sim = pos_sim.mean().item() * temp
+            mean_neg_sim = neg_sim.mean().item() * temp
         
         metrics = {
             'accuracy': accuracy,

@@ -1,0 +1,20 @@
+accelerate launch --config_file config/default_config_stage2_muti_machines.yaml train.py\
+--seed 42 \
+--model_name_or_path meta-llama/Llama-3.2-3B-Instruct \
+--chat_template_format chatml \
+--add_special_tokens False \
+--append_concat_token False \
+--splits train,test \
+--max_seq_length 2048 \
+--num_train_epochs 10 \
+--logging_steps 10 \
+--lora_alpha 16 \
+--lora_dropout 0.1 \
+--lora_r 64 \
+--lora_target_modules "all-linear" \
+--use_nested_quant False \
+--bnb_4bit_compute_dtype float16 \
+--bnb_4bit_quant_storage_dtype uint8 \
+--bnb_4bit_quant_type nf4 \
+--use_flash_attn False \
+--use_peft_lora False \
